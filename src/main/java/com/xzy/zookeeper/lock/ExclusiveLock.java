@@ -6,6 +6,7 @@ import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.Random;
+import java.util.concurrent.BrokenBarrierException;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.TimeUnit;
@@ -25,23 +26,33 @@ public class ExclusiveLock implements Lock {
     private ZooKeeper zooKeeper;
     private LockStatus lockStatus;
     private CountDownLatch connectedSemaphore = new CountDownLatch(1);
-    private CyclicBarrier cyclicBarrier = new CyclicBarrier(2);
+    private CyclicBarrier lockBarrier = new CyclicBarrier(2);
     private String id = String.valueOf(new Random(System.nanoTime()).nextInt(10000000));
 
     public ExclusiveLock() throws IOException, InterruptedException {
-        zooKeeper = new ZooKeeper("localhost:2181", 1000 , new LockNodeWatcher());
+        zooKeeper = new ZooKeeper("localhost:2181", 1000, new LockNodeWatcher());
         lockStatus = LockStatus.UNLOCK;
         connectedSemaphore.await();
     }
 
     @Override
     public void lock() {
-        if(lockStatus != LockStatus.UNLOCK){
+        if (lockStatus != LockStatus.UNLOCK) {
             return;
         }
         //创建节点
-        if(createLockNode()){
-
+        if (createLockNode()) {
+            System.out.println("[" + id + "]获得锁");
+            lockStatus = LockStatus.LOCKED;
+            return;
+        }
+        lockStatus = LockStatus.TRY_LOCK;
+        try {
+            lockBarrier.await();
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        } catch (BrokenBarrierException e) {
+            e.printStackTrace();
         }
 
     }
@@ -76,25 +87,24 @@ public class ExclusiveLock implements Lock {
      * 创建节点
      * @return
      */
-    private Boolean createLockNode(){
+    private Boolean createLockNode() {
         try {
-            zooKeeper.create(LOCK_NODE_FULL_PATH , "".getBytes() , ZooDefs.Ids.OPEN_ACL_UNSAFE , CreateMode.EPHEMERAL);
-        } catch (Exception e){
+            zooKeeper.create(LOCK_NODE_FULL_PATH, "".getBytes(), ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.EPHEMERAL);
+        } catch (Exception e) {
             return false;
         }
         return true;
     }
 
 
-
-    class LockNodeWatcher implements Watcher{
+    class LockNodeWatcher implements Watcher {
 
         @Override
         public void process(WatchedEvent event) {
-            if(Event.KeeperState.SyncConnected != event.getState()){
+            if (Event.KeeperState.SyncConnected != event.getState()) {
                 return;
             }
-            if(Event.EventType.None == event.getType() && event.getPath() == null){
+            if (Event.EventType.None == event.getType() && event.getPath() == null) {
                 connectedSemaphore.countDown();
             }
         }
