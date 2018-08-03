@@ -1,6 +1,7 @@
 package com.xzy.zookeeper.lock;
 
 import org.apache.zookeeper.*;
+import org.apache.zookeeper.data.Stat;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -64,17 +65,50 @@ public class ExclusiveLock implements Lock {
 
     @Override
     public boolean tryLock() {
-        return false;
+        if (lockStatus == LockStatus.LOCKED) {
+            return true;
+        }
+        boolean created = createLockNode();
+        lockStatus = created ? LockStatus.LOCKED : LockStatus.UNLOCK;
+        return created;
     }
 
     @Override
     public boolean tryLock(long time, TimeUnit unit) throws InterruptedException {
-        return false;
+        long millisTimeout = time;
+        if (millisTimeout <= 0L) {
+            return false;
+        }
+        final long deadline = System.currentTimeMillis() + millisTimeout;
+        while (true) {
+            if (tryLock()) {
+                return true;
+            }
+            if (millisTimeout > spinForTimeoutThreshold) {
+                Thread.sleep(SLEEP_TIME);
+            }
+            millisTimeout = deadline - System.currentTimeMillis();
+            if (millisTimeout <= 0L) {
+                return false;
+            }
+        }
     }
 
     @Override
     public void unlock() {
-
+        if (lockStatus == LockStatus.UNLOCK) {
+            return;
+        }
+        try {
+            deleteLockNode();
+            lockStatus = LockStatus.UNLOCK;
+            lockBarrier.reset();
+            System.out.println("[" + id + "]" + " 释放锁");
+        } catch (KeeperException e) {
+            e.printStackTrace();
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
     }
 
     @Override
@@ -94,6 +128,16 @@ public class ExclusiveLock implements Lock {
             return false;
         }
         return true;
+    }
+
+    /***
+     * 刪除節點
+     * @throws KeeperException
+     * @throws InterruptedException
+     */
+    private void deleteLockNode() throws KeeperException, InterruptedException {
+        Stat stat = zooKeeper.exists(LOCK_NODE_FULL_PATH, false);
+        zooKeeper.delete(LOCK_NODE_FULL_PATH, stat.getVersion());
     }
 
 
