@@ -1,4 +1,6 @@
-package com.xzy.zookeeper.lock;
+package com.xzy.zookeeper.lock;/**
+ * Created by Administrator on 2018-08-04.
+ */
 
 import org.apache.zookeeper.*;
 import org.apache.zookeeper.data.Stat;
@@ -10,83 +12,79 @@ import java.util.Random;
 import java.util.concurrent.BrokenBarrierException;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CyclicBarrier;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.locks.Condition;
-import java.util.concurrent.locks.Lock;
 
 /**
- * @Auther: xuzy
- * @Date: 2018/8/3 15:37
- * @Description:
+ * @author xuzhiyong
+ * @createDate 2018-08-04-13:32
  */
-public class ExclusiveLock implements Lock {
+public class ExclusiveLock implements DistributedLock  {
     private static final Logger logger = LoggerFactory.getLogger(ExclusiveLock.class);
-    private static final String LOCK_NODE_FULL_PATH = "/exclusive_lock/lock";
-    private static final long spinForTimeoutThreshold = 1000L; //超时的阀值
+
+    private static final String LOCK_NODE_FULL_PATH = "/exclusive_lock";
+
+    /** 自旋测试超时阈值，考虑到网络的延时性，这里设为1000毫秒 */
+    private static final long spinForTimeoutThreshold = 1000L;
+
     private static final long SLEEP_TIME = 100L;
+
     private ZooKeeper zooKeeper;
-    private LockStatus lockStatus;
+
     private CountDownLatch connectedSemaphore = new CountDownLatch(1);
+
     private CyclicBarrier lockBarrier = new CyclicBarrier(2);
+
+    private LockStatus lockStatus;
+
     private String id = String.valueOf(new Random(System.nanoTime()).nextInt(10000000));
 
-    public ExclusiveLock() throws IOException, InterruptedException {
-        zooKeeper = new ZooKeeper("localhost:2181", 1000, new LockNodeWatcher());
+    public ExclusiveLock() throws InterruptedException, IOException {
+        zooKeeper = new ZooKeeper("127.0.0.1:2181", 1000, new LockNodeWatcher());
         lockStatus = LockStatus.UNLOCK;
         connectedSemaphore.await();
     }
 
-    @Override
-    public void lock() {
+    public void lock() throws Exception {
         if (lockStatus != LockStatus.UNLOCK) {
             return;
         }
-        //创建节点
+
+        // 1. 创建锁节点
         if (createLockNode()) {
-            System.out.println("[" + id + "]获得锁");
+            System.out.println("[" + id  + "]" + " 获取锁");
             lockStatus = LockStatus.LOCKED;
             return;
         }
+
         lockStatus = LockStatus.TRY_LOCK;
-        try {
-            lockBarrier.await();
-        } catch (InterruptedException e) {
-            e.printStackTrace();
-        } catch (BrokenBarrierException e) {
-            e.printStackTrace();
-        }
-
+        lockBarrier.await();
     }
 
-    @Override
-    public void lockInterruptibly() throws InterruptedException {
-
-    }
-
-    @Override
-    public boolean tryLock() {
+    public Boolean tryLock() {
         if (lockStatus == LockStatus.LOCKED) {
             return true;
         }
-        boolean created = createLockNode();
+
+        Boolean created = createLockNode();
         lockStatus = created ? LockStatus.LOCKED : LockStatus.UNLOCK;
         return created;
     }
 
-    @Override
-    public boolean tryLock(long time, TimeUnit unit) throws InterruptedException {
-        long millisTimeout = time;
+    public Boolean tryLock(long millisecond) throws Exception {
+        long millisTimeout = millisecond;
         if (millisTimeout <= 0L) {
             return false;
         }
+
         final long deadline = System.currentTimeMillis() + millisTimeout;
-        while (true) {
+        for (;;) {
             if (tryLock()) {
                 return true;
             }
+
             if (millisTimeout > spinForTimeoutThreshold) {
                 Thread.sleep(SLEEP_TIME);
             }
+
             millisTimeout = deadline - System.currentTimeMillis();
             if (millisTimeout <= 0L) {
                 return false;
@@ -94,62 +92,70 @@ public class ExclusiveLock implements Lock {
         }
     }
 
-    @Override
-    public void unlock() {
+    public void unlock() throws Exception {
         if (lockStatus == LockStatus.UNLOCK) {
             return;
         }
-        try {
-            deleteLockNode();
-            lockStatus = LockStatus.UNLOCK;
-            lockBarrier.reset();
-            System.out.println("[" + id + "]" + " 释放锁");
-        } catch (KeeperException e) {
-            e.printStackTrace();
-        } catch (InterruptedException e) {
-            e.printStackTrace();
-        }
+
+        deleteLockNode();
+        lockStatus = LockStatus.UNLOCK;
+        lockBarrier.reset();
+        System.out.println("[" + id  + "]" + " 释放锁");
     }
 
-    @Override
-    public Condition newCondition() {
-        return null;
-    }
-
-
-    /***
-     * 创建节点
-     * @return
-     */
     private Boolean createLockNode() {
         try {
-            zooKeeper.create(LOCK_NODE_FULL_PATH, "".getBytes(), ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.EPHEMERAL);
-        } catch (Exception e) {
+            zooKeeper.create(LOCK_NODE_FULL_PATH, "".getBytes(),
+                    ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.EPHEMERAL);
+        } catch (KeeperException | InterruptedException e) {
             return false;
         }
+
         return true;
     }
 
-    /***
-     * 刪除節點
-     * @throws KeeperException
-     * @throws InterruptedException
-     */
     private void deleteLockNode() throws KeeperException, InterruptedException {
         Stat stat = zooKeeper.exists(LOCK_NODE_FULL_PATH, false);
         zooKeeper.delete(LOCK_NODE_FULL_PATH, stat.getVersion());
     }
 
+    enum LockStatus {
+        TRY_LOCK,
+        LOCKED,
+        UNLOCK
+    }
 
     class LockNodeWatcher implements Watcher {
 
-        @Override
         public void process(WatchedEvent event) {
             if (Event.KeeperState.SyncConnected != event.getState()) {
                 return;
             }
+
+            // 2. 设置监视器
+            try {
+                zooKeeper.exists(LOCK_NODE_FULL_PATH, this);
+            } catch (KeeperException | InterruptedException e) {
+                e.printStackTrace();
+            }
+
+
             if (Event.EventType.None == event.getType() && event.getPath() == null) {
                 connectedSemaphore.countDown();
+            } else if (Event.EventType.NodeDeleted == event.getType()
+                    && event.getPath().equals(LOCK_NODE_FULL_PATH)) {
+
+                // 3. 再次尝试创建锁
+                if (lockStatus == LockStatus.TRY_LOCK && createLockNode()) {
+                    lockStatus = LockStatus.LOCKED;
+                    try {
+                        lockBarrier.await();
+                        System.out.println("[" + id  + "]" + " 获取锁");
+                        return;
+                    } catch (InterruptedException | BrokenBarrierException e) {
+                        e.printStackTrace();
+                    }
+                }
             }
         }
     }
