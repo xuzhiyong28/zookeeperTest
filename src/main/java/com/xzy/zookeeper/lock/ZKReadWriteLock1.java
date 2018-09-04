@@ -53,7 +53,7 @@ public class ZKReadWriteLock1 implements ReadWriteLock {
 
     @Override
     public DistributedLock readLock() {
-        return new ReadLock();
+        return readLock;
     }
 
     @Override
@@ -414,6 +414,13 @@ public class ZKReadWriteLock1 implements ReadWriteLock {
         }
     }
 
+    public ReadLock getReadLock() {
+        return readLock;
+    }
+
+    public void setReadLock(ReadLock readLock) {
+        this.readLock = readLock;
+    }
 
     public static void main(String[] args){
         System.out.println(new Random(System.nanoTime()).nextInt(10000000) + "-read-");
